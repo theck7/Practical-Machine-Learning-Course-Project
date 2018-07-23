@@ -1,0 +1,151 @@
+---
+title: "Practical Machine Learning Course Project"
+output: 
+  html_document:
+    keep_md: true
+---
+
+```{r load_packages, results = "hide", message=FALSE, warning=FALSE}
+#Load required packages and set the seed for reproducibility
+library(dplyr)
+library(ggplot2)
+library(caret)
+library(parallel)
+library(doParallel)
+library(rattle)
+
+set.seed(12563)
+```
+
+# Executive Summary
+
+One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. The goal of this project is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants to predict the manner in which they did an exercise. They were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions:
+
+1. Class A: exactly according to the specification
+2. Class B: throwing the elbows to the front
+3. Class C lifting the dumbbell only halfway
+4. Class D lowering the dumbbell only halfway
+5. Class E throwing the hips to the front
+
+Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes.
+
+The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har
+
+#Load Data & Exploratory Data Analysis
+```{r Load_Data}
+#Load the data from working directory
+training <- read.csv("pml-training.csv", header = TRUE, sep = ",", na.strings=c("NA","#DIV/0!", ""))
+testing <- read.csv("pml-testing.csv", header = TRUE, sep = ",", na.strings=c("NA","#DIV/0!", ""))
+```
+
+
+
+```{r}
+dim(training)
+
+str(training)
+```
+
+The training data set has 160 variables, many which consist primarily of missing data.
+
+```{r}
+summarize(group_by(training, classe), Training=n())
+qplot(training$classe, fill=I("green"), col=I("black"), main = "Number of Observations per Class", xlab="Class", ylab="Frequency")
+```
+
+As can be seen from the table and chart above, each class has a large amount of observations with Class A, performing the exercise exactly according to the specification, having the most data.  
+
+#Clean Data
+```{r Clean_Data}
+#Delete columns with missing values
+training <- training[ , colSums(is.na(training)) == 0]
+testing <- testing[ , colSums(is.na(testing)) == 0]
+
+#Delete irrelevant variables (first 7 columns)
+training <- training[,-c(1:7)]
+testing <- testing[,-c(1:7)]
+```
+
+The first 7 columns contain user and time information which will not be useful variables for the model.  These 7 variables, along with 100 variables that consist almost entirely of missing values are removed from the data set.  This leaves the training and test data sets with 53 variables which will be used in a model to predict the manner in which an exercise was done.
+
+#Cross Validation
+Cross-validation will be performed by subsampling the training data set randomly without replacement into 2 data sets: 75% of training data set for training and 25% for testing. The models will be fitted on the subtraining data set, and tested on the subtesting data set. 
+
+The test set accuracy will be estimated with the training set. Once the most accurate model is found, it will be tested on the original testing data set.
+
+Summary of Approach:
+
+1. Use the training set
+2. Split it into training/test sets
+3. Build a model on the training set
+4. Evaluate on the test set
+
+```{r}
+#Partition training set
+Data_Partition <- createDataPartition(y = training$classe, p = 0.75, list = FALSE)
+subtraining <- training[Data_Partition, ]
+subtesting <- training[-Data_Partition, ]
+```
+
+#Decision Tree Model
+The first model to be evaluated is a decision tree.
+```{r Decision_Tree_Model, cache=TRUE}
+#Decision Tree
+mod_DT <- train(classe ~ ., method= "rpart", data = subtraining)
+
+#Plot the Decision Tree
+fancyRpartPlot(mod_DT$finalModel, sub = "")
+```
+
+```{r}
+#Test results on subtesting data set
+prediction_DT <- predict(mod_DT, subtesting)
+DT_CM <- confusionMatrix(prediction_DT, subtesting$classe)
+
+DT_Accuracy <- DT_CM$overall['Accuracy']
+
+DT_CM
+```
+
+The accuracy of the decision tree model is only `r DT_Accuracy`.
+
+#Random Forest Model
+The next model to be evaluated is a random forest model which has higher accuracy at the expense of speed, interpretability, and a greater risk of overfitting.
+```{r Random_Forest_Model, cache=TRUE}
+#Random Forest Model
+#Configure parallel processing
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+
+#Configure trainControl object
+fitControl <- trainControl(method = "cv", number = 5, allowParallel = TRUE)
+
+#Develop training model
+mod_RF <- train(classe ~ ., method = "rf", data = subtraining, verbose = FALSE,trControl = fitControl)
+
+#De-register parallel processing cluster
+stopCluster(cluster)
+registerDoSEQ()
+
+#Prediction
+prediction_RF <- predict(mod_RF, subtesting)
+RF_CM <- confusionMatrix(prediction_RF, subtesting$classe)
+
+RF_Accuracy <- RF_CM$overall['Accuracy']
+RF_CI <- RF_CM$overall[3:4]
+
+RF_CM
+```
+
+The accuracy of the random forest model is `r RF_Accuracy` with a 95% confidence interval of (`r RF_CI`).  This is much better than the decision tree and thus the random forest model is chosen.  
+
+Out of Sample Error is the error rate you get on a new data set. Sometimes called generalization error. Out of sample error is what you care about. The expected out of sample error will equal 1-accuracy in the cross-validation data which is `r 1-RF_Accuracy`
+
+#Prediction Test Cases
+Below are the results of the random forest model applied to the testing dataset:
+
+```{r Prediction_Quiz}
+#Prediction Quiz 
+Prediction_Quiz <- predict(mod_RF, testing)
+Prediction_Quiz
+```
